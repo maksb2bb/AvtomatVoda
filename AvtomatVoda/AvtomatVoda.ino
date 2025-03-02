@@ -16,6 +16,7 @@ int _SUMRUB = 0;
 int _WATERLITER = 0;
 int _TEMPON = 0;
 int _TEMPOFF = 0;
+String message = "Нет воды";
 
 bool inMenu = false;
 bool set1 = false;
@@ -28,7 +29,7 @@ int cursorPos = 5;
 bool btnNextPrev = LOW;
 bool btnBackPrev = LOW;
 bool btnOkPrev = LOW;
-bool buttonHeld = false;
+bool buttonHold = false;
 unsigned long buttonPressTime = 0;
 
 RobotClass_LiquidCrystal_I2C lcd(0x27, 16, 2, CP_UTF8);
@@ -38,7 +39,6 @@ void firstScreen() {
   lcd.backlight();
   lcd.setCursor(0, 0);
   lcd.print("Готов");
-  _PRICEPERLITER = EEPROM.get(0, _PRICEPERLITER);
   lcd.setCursor(0, 1);
   lcd.print("1л = " + String(_PRICEPERLITER) + " руб");
 }
@@ -47,21 +47,12 @@ void settings_1() {
   inMenu = true;
   set1 = true;
 
-  Serial.println("Settings 1");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
-
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Настройки цены");
   lcd.setCursor(0, 1);
-  _PRICEPERLITER = EEPROM.get(0, _PRICEPERLITER);
   lcd.print("1л = " + String(_PRICEPERLITER) + " руб");
-  lcd.setCursor(5, 1);
+  lcd.setCursor(cursorPos, 1);
   lcd.cursor();
   lcd.blink();
 }
@@ -71,38 +62,21 @@ void settings_2() {
   set1 = false;
   set2 = true;
 
-  Serial.println("Settings 2");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
-
   lcd.noCursor();
   lcd.noBlink();
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Калиб имп");
   lcd.setCursor(13, 0);
-  lcd.print("1л");
+  lcd.print("5л");
   lcd.setCursor(0, 1);
   lcd.print(String(_PULSEPERLITER));
 }
 
-//??????????????????????? Нужен ли подсчет суммы рублей ?????????????????????????????????
 void settings_3() {
   inMenu = true;
   set2 = false;
   set3 = true;
-
-  Serial.println("Settings 3");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
 
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -116,14 +90,6 @@ void settings_4() {
   set3 = false;
   set4 = true;
 
-  Serial.println("Settings 4");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
-
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Литры воды");
@@ -136,23 +102,20 @@ void settings_5() {
   set4 = false;
   set5 = true;
 
-  Serial.println("Settings 5");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
-
   lcd.clear();
-  lcd.setCursor(1, 0);
+  lcd.setCursor(0, 0);
   lcd.print("t Вкл");
   lcd.setCursor(0, 1);
   lcd.print(String(_TEMPON));
   lcd.setCursor(10, 0);
   lcd.print("t Выкл");
-  lcd.setCursor(1, 10);
+  lcd.setCursor(10, 1);
   lcd.print(String(_TEMPOFF));
+
+  cursorPos = 0;  // Начальная позиция курсора на "t Вкл"
+  lcd.setCursor(cursorPos, 1);
+  lcd.cursor();
+  lcd.blink();
 }
 
 void settings_6() {
@@ -160,19 +123,14 @@ void settings_6() {
   set5 = false;
   set6 = true;
 
-  Serial.println("Settings 6");
-  Serial.println(set1);
-  Serial.println(set2);
-  Serial.println(set3);
-  Serial.println(set4);
-  Serial.println(set5);
-  Serial.println(set6);
-
+  lcd.noCursor();
+  lcd.noBlink();
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Телефон");
+  lcd.print("Ошибка");
   lcd.setCursor(0, 1);
-  lcd.print("89895099647");
+  lcd.print(message);
+  lcd.setCursor(1, 1);
 }
 
 void updatePrice() {
@@ -180,6 +138,7 @@ void updatePrice() {
   lcd.print("            ");
   lcd.setCursor(5, 1);
   lcd.print(String(_PRICEPERLITER) + " руб");
+  cursorPos = 5;
   lcd.setCursor(cursorPos, 1);
 }
 
@@ -189,6 +148,10 @@ void setup() {
   pinMode(_btnBack, INPUT);
   pinMode(_btnOk, INPUT);
   pinMode(_btnNext, INPUT);
+
+  EEPROM.get(0, _PRICEPERLITER);
+  EEPROM.get(10, _TEMPON);
+  EEPROM.get(20, _TEMPOFF);
 
   firstScreen();
 }
@@ -204,35 +167,48 @@ void loop() {
       buttonPressTime = millis();  // Фиксируем момент нажатия
     }
 
-    if (millis() - buttonPressTime >= HOLD_TIME && !buttonHeld) {
+    if (millis() - buttonPressTime >= HOLD_TIME && !buttonHold) {
       // Кнопка удерживается 3 секунды — переключаем inMenu
-      buttonHeld = true;
+      buttonHold = true;
       inMenu = !inMenu;
       if (inMenu) {
-        settings_1();
+        settings_1();  //цена
       } else {
         EEPROM.put(0, _PRICEPERLITER);
-        firstScreen();
+        EEPROM.put(10, _TEMPON);  // 2 байта
+        EEPROM.put(20, _TEMPOFF);
+        firstScreen();  //основной экран
       }
+      buttonPressTime = 0;
+      buttonHold = false;
     }
   } else {
-    if (buttonPressTime > 0 && !buttonHeld && set1) {
-      settings_2();  // Кратковременное нажатие
+    if (buttonPressTime > 0 && !buttonHold) {
+      if (set1) {
+        settings_2();  // пульсов на 5 литров
+      } else if (set2) {
+        settings_3();  // сумма руб
+      } else if (set3) {
+        settings_4();  // литры воды
+      } else if (set4) {
+        settings_5();  // включение/выключение
+      } else if (set5) {
+        Serial.println(_TEMPON);
+        Serial.println(_TEMPOFF);
+        if ( _TEMPON > 100) {  // Задайте разумный диапазон
+          _TEMPON = 25;                      // Значение по умолчанию
+        }
+        if ( _TEMPOFF > 100) {  // Задайте разумный диапазон
+          _TEMPOFF = 25;                      // Значение по умолчанию
+        }
+        settings_6();  // Телефон
+      }
+      //  else if (set6) {
+      //   settings_1();  //цена
+      // }
+      buttonPressTime = 0;
     }
-    if (buttonPressTime > 0 && !buttonHeld && set2) {
-      settings_3();  // Кратковременное нажатие
-    }
-    if (buttonPressTime > 0 && !buttonHeld && set3) {
-      settings_4();  // Кратковременное нажатие
-    }
-    if (buttonPressTime > 0 && !buttonHeld && set4) {
-      settings_5();  // Кратковременное нажатие
-    }
-    if (buttonPressTime > 0 && !buttonHeld && set5) {
-      settings_6();  // Кратковременное нажатие
-    }
-    buttonPressTime = 0;
-    buttonHeld = false;
+    buttonHold = false;
   }
 
   // Увеличение цены при нажатии кнопки Next (с ожиданием отпускания)
@@ -253,6 +229,69 @@ void loop() {
     while (digitalRead(_btnBack) == HIGH)
       ;  // Ждём отпускание кнопки
   }
+  if (inMenu && set5 && cursorPos == 0 && btnNext == HIGH && btnNextPrev == LOW) {
+    lcd.setCursor(0, 1);
+    lcd.print("       ");
+    lcd.setCursor(0, 1);
+    _TEMPON++;
+    lcd.print(String(_TEMPON));
+    lcd.setCursor(0, 1);
+    delay(DEBOUNCE_DELAY);
+    while (digitalRead(_btnNext) == HIGH)
+      ;
+  }
+  if (inMenu && set5 && cursorPos == 0 && btnBack == HIGH && btnBackPrev == LOW) {
+    lcd.setCursor(0, 1);
+    lcd.print("       ");
+    lcd.setCursor(0, 1);
+    _TEMPON--;
+    lcd.print(String(_TEMPON));
+    lcd.setCursor(0, 1);
+    delay(DEBOUNCE_DELAY);
+    while (digitalRead(_btnBack) == HIGH)
+      ;
+  }
+  if (inMenu && set5 && btnOk == HIGH && btnOkPrev == LOW) {
+    lcd.noCursor();
+    lcd.noBlink();
+
+    if (cursorPos == 0) {
+      cursorPos = 10;  // Переход на "t Выкл"
+    } else {
+      cursorPos = 0;  // Возврат на "t Вкл"
+    }
+
+    lcd.setCursor(cursorPos, 1);
+    lcd.cursor();
+    lcd.blink();
+
+    delay(DEBOUNCE_DELAY);  // защита от дребезга
+    while (digitalRead(_btnOk) == HIGH)
+      ;  // ожидание отпускания
+  }
+  if (inMenu && set5 && cursorPos == 10 && btnNext == HIGH && btnNextPrev == LOW) {
+    lcd.setCursor(cursorPos, 1);
+    lcd.print("       ");
+    lcd.setCursor(cursorPos, 1);
+    _TEMPOFF++;
+    lcd.print(String(_TEMPOFF));
+    lcd.setCursor(cursorPos, 1);
+    delay(DEBOUNCE_DELAY);
+    while (digitalRead(_btnNext) == HIGH)
+      ;
+  }
+  if (inMenu && set5 && cursorPos == 10 && btnBack == HIGH && btnBackPrev == LOW) {
+    lcd.setCursor(cursorPos, 1);
+    lcd.print("       ");
+    lcd.setCursor(cursorPos, 1);
+    _TEMPOFF--;
+    lcd.print(String(_TEMPOFF));
+    lcd.setCursor(cursorPos, 1);
+    delay(DEBOUNCE_DELAY);
+    while (digitalRead(_btnBack) == HIGH)
+      ;
+  }
+
 
   btnNextPrev = btnNext;  // Запоминаем состояние кнопки
   btnBackPrev = btnBack;  // Запоминаем состояние кнопки
