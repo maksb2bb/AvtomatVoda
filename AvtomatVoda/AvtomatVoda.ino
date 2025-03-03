@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <RobotClass_LiquidCrystal_I2C.h>
 #include <EEPROM.h>
+#include <DHT11.h>
 
 #define _btnBack 10
 #define _btnOk 11
@@ -31,8 +32,10 @@ bool btnBackPrev = LOW;
 bool btnOkPrev = LOW;
 bool buttonHold = false;
 unsigned long buttonPressTime = 0;
+int temperature = 0;
 
 RobotClass_LiquidCrystal_I2C lcd(0x27, 16, 2, CP_UTF8);
+DHT11 dht11(9);
 
 void firstScreen() {
   lcd.init();
@@ -142,12 +145,26 @@ void updatePrice() {
   lcd.setCursor(cursorPos, 1);
 }
 
+void termoCable(){
+  Serial.println(temperature);
+  if (temperature <= 27){
+    Serial.println("Термо вкл");
+    Serial.println(temperature);
+    digitalWrite(5, HIGH);
+  }else if (temperature >= 28){
+    Serial.println("Термо выкл");
+    Serial.println(temperature);
+    digitalWrite(5, LOW);
+  }
+}
+
 void setup() {
   Serial.begin(9600);
 
   pinMode(_btnBack, INPUT);
   pinMode(_btnOk, INPUT);
   pinMode(_btnNext, INPUT);
+  pinMode(5, OUTPUT);
 
   EEPROM.get(0, _PRICEPERLITER);
   EEPROM.get(10, _TEMPON);
@@ -161,6 +178,9 @@ void loop() {
   bool btnNext = digitalRead(_btnNext);
   bool btnBack = digitalRead(_btnBack);
   bool btnOk = digitalRead(_btnOk);
+  temperature = dht11.readTemperature();
+
+  termoCable();
 
   if (value < THRESHOLD) {  // Кнопка нажата
     if (buttonPressTime == 0) {
@@ -195,11 +215,11 @@ void loop() {
       } else if (set5) {
         Serial.println(_TEMPON);
         Serial.println(_TEMPOFF);
-        if ( _TEMPON > 100) {  // Задайте разумный диапазон
-          _TEMPON = 25;                      // Значение по умолчанию
+        if (_TEMPON > 100) {  // Задайте разумный диапазон
+          _TEMPON = 25;       // Значение по умолчанию
         }
-        if ( _TEMPOFF > 100) {  // Задайте разумный диапазон
-          _TEMPOFF = 25;                      // Значение по умолчанию
+        if (_TEMPOFF > 100) {  // Задайте разумный диапазон
+          _TEMPOFF = 25;       // Значение по умолчанию
         }
         settings_6();  // Телефон
       }
