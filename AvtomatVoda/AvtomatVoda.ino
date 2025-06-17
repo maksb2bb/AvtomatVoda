@@ -33,9 +33,9 @@ I2C_LiquidCrystal_RUS lcd(0x27, 16, 2);
 #define MAX_TEMP_OFF 30
 #define PAUSE_DURATION 1000
 #define CALIBRATION_FACTOR 7.5
-#define PAUSE_TIMEOUT 300000 
+#define PAUSE_TIMEOUT 300000 // 5 минут для сброса паузы бездействия
+#define DISPENSING_PAUSE_TIMEOUT 180000 // 3 минуты для паузы во время налива
 #define CALIBRATION_VOLUME 5000
-#define MONEY_DISPLAY_TIME 30000 
 #define MONEY_INSERTION_TIMEOUT 500 // Время для определения активных импульсов (в мс)
 
 DHT dht(DHTPIN, DHT11);
@@ -56,8 +56,10 @@ volatile unsigned int sessionMoney = 0;
 unsigned long totalMoney = 0;
 unsigned long totalLiters = 0;
 volatile bool dispensing = false;
-volatile bool pauseMode = false;
-unsigned long pauseStartTime = 0;
+volatile bool pauseMode = false; // Пауза из-за бездействия
+volatile bool pauseActive = false; // Пауза во время налива
+unsigned long pauseStartTime = 0; // Для паузы бездействия
+unsigned long pauseStartTimeDispensing = 0; // Для паузы во время налива
 bool isRelayOn = false;
 unsigned long lastPulseTime = 0;
 unsigned long lastTempCheck = 0;
@@ -85,7 +87,7 @@ void IRAM_ATTR pulseCounter() {
   unsigned long now = micros();
   
   if (now - lastPulseTime > 5000) { 
-    if (dispensing) {
+    if (dispensing && !pauseActive) {
       pulseCount++;
       lastPulseReceivedTime = millis();
     }
@@ -151,7 +153,7 @@ void handleWaterDispensing() {
     criticalOperation = false;
     interrupts();
     
-    if (dispensing && currentPulses > 0) {
+    if (dispensing && !pauseActive && currentPulses > 0) {
       waterDispensedLiters += (currentPulses * mlPerPulse) / 1000.0;
       needRedraw = true;
       
@@ -173,9 +175,9 @@ void handleWaterDispensing() {
         sessionMoney = 0;
         waterDispensedLiters = 0;
         needRedraw = true;
+        showInactive(); // Показать экран "Готово" после завершения налива
       }
     }
-    
     lastPulseCheck = now;
   }
 }
@@ -275,17 +277,26 @@ void updateDisplay() {
   if (!needUpdate) return;
 
   if (dispensing) {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Подача воды");
-    lcd.setCursor(0, 1);
-    String dispStr = String(waterDispensedLiters, 1) + "/" + String(availableLiters, 1) + "л";
-    if (millis() - lastPulseReceivedTime < 1000) {
-      dispStr += " *";
+    if (pauseActive) {
+      unsigned long remaining = (DISPENSING_PAUSE_TIMEOUT - (millis() - pauseStartTimeDispensing)) / 1000;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Пауза налива");
+      lcd.setCursor(0, 1);
+      lcd.print(String(remaining) + " сек");
     } else {
-      dispStr += "  ";
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Налив воды");
+      lcd.setCursor(0, 1);
+      String dispStr = String(waterDispensedLiters, 1) + "/" + String(availableLiters, 1) + "л";
+      if (millis() - lastPulseReceivedTime < 1000) {
+        dispStr += " *";
+      } else {
+        dispStr += "  ";
+      }
+      lcd.print(dispStr);
     }
-    lcd.print(dispStr);
   } else {
     lcd.clear();
     if (pauseMode) {
@@ -362,11 +373,28 @@ void loop() {
   // Handle user button press
   if (userButtonFlag) {
     userButtonFlag = false;
-    // Проверяем, поступают ли импульсы от купюроприёмника (в течение 500 мс)
+    Serial.println("ButtonUSER pressed");
+    // Проверяем, поступают ли импульсы от купюроприёмника
     if ((currentMillis - lastCoinInterruptTime < MONEY_INSERTION_TIMEOUT || 
          currentMillis - lastBillInterruptTime < MONEY_INSERTION_TIMEOUT)) {
       Serial.println("USER button ignored: money insertion in progress");
+    } else if (dispensing && !pauseActive) {
+      // Остановка налива и активация паузы
+      pauseActive = true;
+      digitalWrite(RELE, HIGH); // Закрываем клапан
+      isRelayOn = false;
+      pauseStartTimeDispensing = millis();
+      needRedraw = true;
+      Serial.println("Dispensing paused");
+    } else if (dispensing && pauseActive) {
+      // Возобновление налива
+      pauseActive = false;
+      digitalWrite(RELE, LOW); // Открываем клапан
+      isRelayOn = true;
+      needRedraw = true;
+      Serial.println("Dispensing resumed");
     } else if (availableLiters > 0 && !dispensing) {
+      // Начало налива
       dispensing = true;
       digitalWrite(RELE, LOW);
       isRelayOn = true;
@@ -385,6 +413,7 @@ void loop() {
   checkWaterSensor();
   handleWaterDispensing();
   
+  // Сброс сессии при истечении времени паузы бездействия
   if (pauseMode && (currentMillis - pauseStartTime > PAUSE_TIMEOUT)) {
     noInterrupts();
     pauseMode = false;
@@ -393,17 +422,26 @@ void loop() {
     waterDispensedLiters = 0;
     digitalWrite(RELE, HIGH);
     isRelayOn = false;
-    interrupts();
     needRedraw = true;
+    showInactive(); // Показать экран "Готово" после таймаута
     Serial.println("Pause timeout");
+    interrupts();
   }
   
-  if (showingMoneyInfo && (currentMillis - lastMoneyInsertTime > MONEY_DISPLAY_TIME)) {
-    showingMoneyInfo = false;
+  // Сброс налива при истечении времени паузы во время налива
+  if (pauseActive && (currentMillis - pauseStartTimeDispensing > DISPENSING_PAUSE_TIMEOUT)) {
+    noInterrupts();
+    pauseActive = false;
+    dispensing = false;
     sessionMoney = 0;
     availableLiters = 0;
+    waterDispensedLiters = 0;
+    digitalWrite(RELE, HIGH);
+    isRelayOn = false;
     needRedraw = true;
-    Serial.println("Money display timeout, USER button enabled");
+    showInactive(); // Показать экран "Готово" после таймаута
+    Serial.println("Dispensing pause timeout");
+    interrupts();
   }
 
   if (currentMillis - lastUpdateTime >= SCREEN_UPDATE_INTERVAL) {
