@@ -7,10 +7,6 @@
 I2C_LiquidCrystal_RUS lcd(0x27, 16, 2);
 
 // Buttons
-#define ButtonOK 12
-#define ButtonBACK 14
-#define ButtonNEXT 26
-#define ButtonMENU 27
 #define ButtonUSER 15
 
 // Device pins
@@ -40,51 +36,17 @@ I2C_LiquidCrystal_RUS lcd(0x27, 16, 2);
 #define PAUSE_TIMEOUT 300000 
 #define CALIBRATION_VOLUME 5000
 #define MONEY_DISPLAY_TIME 30000 
+#define MONEY_INSERTION_TIMEOUT 500 // Время для определения активных импульсов (в мс)
 
 DHT dht(DHTPIN, DHT11);
-
-enum status {
-  inactive,
-  Menu,
-  EditPrice,
-  EditTemperatures,
-  ShowTotalMoney,
-  ShowTotalLiters,
-  ShowStatistics,
-  ResetStatistics,
-  Calibration
-};
 
 // Global variables
 volatile bool criticalOperation = false;
 volatile bool eepromUpdateNeeded = false;
-status currentStatus = inactive;
-unsigned long menutimebutton = 0;
-const int long_press_menuButton = 2000;
-int currentMenuIndex = 0;
-const int NUM_MENU_ITEMS = 8;
-String menuItems[NUM_MENU_ITEMS] = {
-  "Statistics",
-  "Set price",
-  "Temperature",
-  "Calibration",
-  "Total money",
-  "Total liters",
-  "Reset stats",
-  "Exit"
-};
-
-// Settings
 float price = 10.00;
 int tempOn = 18;
 int tempOff = 22;
 float mlPerPulse = 0.1;
-
-// Editing variables
-bool editingRubles = true;
-int editRubles = 0;
-int editKopecks = 0;
-bool editingTempOn = false;
 
 // System variables
 volatile unsigned long pulseCount = 0;
@@ -107,19 +69,7 @@ bool showingMoneyInfo = false;
 unsigned long lastMoneyInsertTime = 0;
 volatile bool showNoMoneyMessage = false;
 volatile unsigned long targetPulseCount = 0; 
-volatile bool calibrationRequest = false;
-volatile bool calibrationStopRequest = false;
-volatile unsigned long calibrationPulseCount = 0;
-bool isCalibrating = false;
-unsigned long calibrationStartTime = 0;
-volatile unsigned long calibrationPulses = 0;
-volatile bool calibrationRunning = false;
 unsigned long lastPulseReceivedTime = 0;
-
-enum calibrationState { CALIB_IDLE, CALIB_STARTED, CALIB_COMPLETED };
-calibrationState calibState = CALIB_IDLE;
-unsigned long calibrationStartPulses = 0;
-const float CALIBRATION_LITERS = 5.0;
 
 // Debounce
 volatile unsigned long lastCoinInterruptTime = 0;
@@ -127,18 +77,17 @@ volatile unsigned long lastBillInterruptTime = 0;
 volatile unsigned long lastUserButtonPress = 0;
 const unsigned long debounceDelay = 300;
 
+// Flag for user button press
+volatile bool userButtonFlag = false;
+
 void IRAM_ATTR pulseCounter() {
   static unsigned long lastPulseTime = 0;
   unsigned long now = micros();
   
   if (now - lastPulseTime > 5000) { 
-    if (isCalibrating) {
-      calibrationPulses++;
-    } else if (dispensing) {
+    if (dispensing) {
       pulseCount++;
       lastPulseReceivedTime = millis();
-      Serial.print("Pulse: ");
-      Serial.println(pulseCount);
     }
     lastPulseTime = now;
   }
@@ -156,10 +105,6 @@ void IRAM_ATTR coinInserted() {
     showingMoneyInfo = true;
     needRedraw = true;
     eepromUpdateNeeded = true;
-    Serial.print("Coin inserted, money: ");
-    Serial.print(sessionMoney);
-    Serial.print(", liters: ");
-    Serial.println(availableLiters, 2);
   }
   lastCoinInterruptTime = interruptTime;
   interrupts();
@@ -177,10 +122,6 @@ void IRAM_ATTR billInserted() {
     showingMoneyInfo = true;
     needRedraw = true;
     eepromUpdateNeeded = true;
-    Serial.print("Bill inserted, money: ");
-    Serial.print(sessionMoney);
-    Serial.print(", liters: ");
-    Serial.println(availableLiters, 2);
   }
   lastBillInterruptTime = interruptTime;
   interrupts();
@@ -191,61 +132,8 @@ void IRAM_ATTR userButtonPressed() {
   unsigned long now = millis();
   
   if (now - lastPress > debounceDelay) {
-    noInterrupts();
-    if (digitalRead(ButtonUSER) == HIGH) {
-      Serial.println("USER button: False trigger detected");
-      lastPress = now;
-      interrupts();
-      return;
-    }
-    delay(10);
-    if (digitalRead(ButtonUSER) != LOW) {
-      Serial.println("USER button: Bounce detected");
-      lastPress = now;
-      interrupts();
-      return;
-    }
-    
-    Serial.print("USER button pressed, state: ");
-    Serial.print(currentStatus);
-    Serial.print(", moneyInfo: ");
-    Serial.print(showingMoneyInfo);
-    Serial.print(", dispensing: ");
-    Serial.print(dispensing);
-    Serial.print(", availableLiters: ");
-    Serial.print(availableLiters, 2);
-    Serial.print(", lastMoneyInsert: ");
-    Serial.println(lastMoneyInsertTime);
-    
-    if (showingMoneyInfo && currentStatus == inactive) {
-      Serial.println("USER button ignored: money insertion in progress");
-      lastPress = now;
-      interrupts();
-      return;
-    }
-    
-    if (!isCalibrating && currentStatus == Calibration) {
-      calibrationRequest = true;
-      Serial.println("Calibration requested");
-    } else if (isCalibrating) {
-      calibrationStopRequest = true;
-      Serial.println("Calibration stop requested");
-    } else if (currentStatus == inactive && availableLiters > 0 && !dispensing) {
-      dispensing = true;
-      digitalWrite(RELE, LOW);
-      isRelayOn = true;
-      waterDispensedLiters = 0;
-      pulseCount = 0;
-      pauseMode = false;
-      needRedraw = true;
-      Serial.println("Dispensing started");
-    } else if (currentStatus == inactive && availableLiters <= 0 && !dispensing) {
-      showNoMoneyMessage = true;
-      needRedraw = true;
-      Serial.println("No funds");
-    }
+    userButtonFlag = true;
     lastPress = now;
-    interrupts();
   }
 }
 
@@ -265,10 +153,6 @@ void handleWaterDispensing() {
     
     if (dispensing && currentPulses > 0) {
       waterDispensedLiters += (currentPulses * mlPerPulse) / 1000.0;
-      Serial.print("Dispensed: ");
-      Serial.print(waterDispensedLiters, 2);
-      Serial.print("L/");
-      Serial.println(availableLiters, 2);
       needRedraw = true;
       
       if (waterDispensedLiters >= availableLiters - 0.01) {
@@ -283,9 +167,6 @@ void handleWaterDispensing() {
         lcd.print("Налив завершен");
         lcd.setCursor(0, 1);
         lcd.print(String(waterDispensedLiters, 1) + " л налито");
-        Serial.print("Dispensing done: ");
-        Serial.print(waterDispensedLiters, 2);
-        Serial.println("L");
         delay(2000);
         
         availableLiters = 0;
@@ -334,7 +215,6 @@ void safeEEPROMUpdate() {
     eepromUpdateNeeded = false;
     interrupts();
     lastUpdate = millis();
-    Serial.println("EEPROM updated");
   }
 }
 
@@ -357,14 +237,13 @@ void loadSettings() {
     tempOn = tempOff - 2;
     if (tempOn < MIN_TEMP_ON) tempOn = MIN_TEMP_ON;
   }
-  Serial.println("Settings loaded");
 }
 
 void checkTemperature() {
   float t = dht.readTemperature();
   if (!isnan(t)) {
     currentTemp = t;
-    if (currentStatus == inactive) needRedraw = true;
+    needRedraw = true;
 
     if (t < tempOn && !isRelayOn) {
       digitalWrite(TEMP_RELE, HIGH); 
@@ -396,6 +275,9 @@ void updateDisplay() {
   if (!needUpdate) return;
 
   if (dispensing) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Подача воды");
     lcd.setCursor(0, 1);
     String dispStr = String(waterDispensedLiters, 1) + "/" + String(availableLiters, 1) + "л";
     if (millis() - lastPulseReceivedTime < 1000) {
@@ -422,62 +304,10 @@ void updateDisplay() {
       lcd.print("Внесите средства");
       showNoMoneyMessage = false;
     } else {
-      switch(currentStatus) {
-        case inactive:
-          showInactive();
-          if (availableLiters > 0) {
-            lcd.setCursor(10, 1);
-            lcd.print(String(availableLiters, 1) + " л");
-          }
-          break;
-          
-        case Menu:
-          lcd.setCursor(0, 0);
-          lcd.print("> " + menuItems[currentMenuIndex]);
-          break;
-          
-        case EditPrice:
-          lcd.setCursor(0, 0);
-          lcd.print("Цена за литр:");
-          lcd.setCursor(0, 1);
-          if (editingRubles) {
-            lcd.print(">");
-            lcd.print(String(editRubles));
-            lcd.print("<");
-            lcd.print(".");
-            if (editKopecks < 10) lcd.print("0");
-            lcd.print(String(editKopecks));
-          } else {
-            lcd.print(String(editRubles));
-            lcd.print(".");
-            lcd.print(">");
-            if (editKopecks < 10) lcd.print("0");
-            lcd.print(String(editKopecks));
-            lcd.print("<");
-          }
-          break;
-          
-        case EditTemperatures:
-          lcd.setCursor(0, 0);
-          lcd.print("Вкл t: " + String(tempOn));
-          lcd.setCursor(0, 1);
-          lcd.print("Выкл t: " + String(tempOff));
-          if (editingTempOn) {
-            lcd.setCursor(6, 0);
-            lcd.print(">");
-            lcd.setCursor(8 + String(tempOn).length(), 0);
-            lcd.print("<");
-          } else {
-            lcd.setCursor(6, 1);
-            lcd.print(">");
-            lcd.setCursor(8 + String(tempOff).length(), 1);
-            lcd.print("<");
-          }
-          break;
-          
-        case Calibration:
-          handleCalibration();
-          break;
+      showInactive();
+      if (availableLiters > 0) {
+        lcd.setCursor(10, 1);
+        lcd.print(String(availableLiters, 1) + " л");
       }
     }
   }
@@ -488,296 +318,12 @@ void updateDisplay() {
   needRedraw = false;
 }
 
-void handleSystemState() {
-  switch (currentStatus) {
-    case inactive: handleIdle(); break;
-    case Menu: handleMenu(); break;
-    case EditPrice: handleEditPrice(); break;
-    case EditTemperatures: handleEditTemperatures(); break;
-    case ShowTotalMoney: showTotalMoney(); break;
-    case ShowTotalLiters: showTotalLiters(); break;
-    case ShowStatistics: showStatistics(); break;
-    case ResetStatistics: confirmReset(); break;
-    case Calibration: handleCalibration(); break;
-  }
-}
-
-void handleIdle() {
-  if (digitalRead(ButtonMENU) == LOW) {
-    delay(50);
-    if (digitalRead(ButtonMENU) == LOW) {
-      currentStatus = Menu;
-      needRedraw = true;
-    }
-  }
-}
-
-void handleMenu() {
-  static unsigned long lastButtonPress = 0;
-  if (millis() - lastButtonPress < 200) return;
-
-  if (digitalRead(ButtonNEXT) == LOW) {
-    currentMenuIndex = (currentMenuIndex + 1) % NUM_MENU_ITEMS;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonBACK) == LOW) {
-    currentMenuIndex = (currentMenuIndex - 1 + NUM_MENU_ITEMS) % NUM_MENU_ITEMS;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonOK) == LOW) {
-    switch (currentMenuIndex) {
-      case 0: currentStatus = ShowStatistics; break;
-      case 1: 
-        currentStatus = EditPrice; 
-        editRubles = (int)price;
-        editKopecks = (price - editRubles) * 100;
-        editingRubles = true;
-        break;
-      case 2: currentStatus = EditTemperatures; break;
-      case 3: currentStatus = Calibration; break;
-      case 4: currentStatus = ShowTotalMoney; break;
-      case 5: currentStatus = ShowTotalLiters; break;
-      case 6: currentStatus = ResetStatistics; break;
-      case 7: currentStatus = inactive; break;
-    }
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-}
-
-void handleEditPrice() {
-  static unsigned long lastButtonPress = 0;
-  if (millis() - lastButtonPress < 200) return;
-
-  if (digitalRead(ButtonMENU) == LOW) {
-    editingRubles = !editingRubles;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonNEXT) == LOW) {
-    if (editingRubles) editRubles = min(editRubles + 1, 999);
-    else editKopecks = min(editKopecks + 1, 99);
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonBACK) == LOW) {
-    if (editingRubles) editRubles = max(editRubles - 1, 0);
-    else editKopecks = max(editKopecks - 1, 0);
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonOK) == LOW) {
-    price = editRubles + (editKopecks / 100.0);
-    EEPROM.put(EEPROM_PRICE_ADDR, price);
-    EEPROM.commit();
-    currentStatus = Menu;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-}
-
-void handleEditTemperatures() {
-  static unsigned long lastButtonPress = 0;
-  if (millis() - lastButtonPress < 200) return;
-
-  if (digitalRead(ButtonMENU) == LOW) {
-    editingTempOn = !editingTempOn;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonNEXT) == LOW) {
-    if (editingTempOn) tempOn = min(tempOn + 1, tempOff - 1);
-    else tempOff = min(tempOff + 1, MAX_TEMP_OFF);
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonBACK) == LOW) {
-    if (editingTempOn) tempOn = max(tempOn - 1, MIN_TEMP_ON);
-    else tempOff = max(tempOff - 1, tempOn + 1);
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-
-  if (digitalRead(ButtonOK) == LOW) {
-    EEPROM.put(EEPROM_TEMP_ON_ADDR, tempOn);
-    EEPROM.put(EEPROM_TEMP_OFF_ADDR, tempOff);
-    EEPROM.commit();
-    currentStatus = Menu;
-    needRedraw = true;
-    lastButtonPress = millis();
-  }
-}
-
-void handleCalibration() {
-  static enum { CALIB_IDLE, CALIB_RUNNING, CALIB_DONE } state = CALIB_IDLE;
-  static unsigned long startPulses = 0;
-
-  switch (state) {
-    case CALIB_IDLE:
-      Serial.println("Calibration: Idle");
-      if (calibrationRequest) {
-        calibrationRequest = false;
-        startPulses = pulseCount;
-        calibrationPulseCount = 0;
-        digitalWrite(RELE, LOW);
-        isCalibrating = true;
-        state = CALIB_RUNNING;
-        
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Calibration...");
-        lcd.setCursor(0, 1);
-        lcd.print("Наливайте 5л");
-        
-        Serial.println("Calibration started");
-        Serial.print("Pulses: ");
-        Serial.println(startPulses);
-      }
-      break;
-
-    case CALIB_RUNNING:
-      static unsigned long lastUpdate = 0;
-      if (millis() > lastUpdate + 1000) {
-        lcd.setCursor(0, 1);
-        lcd.print("Имп: ");
-        lcd.print(String(calibrationPulseCount));
-        lcd.print("   ");
-        lastUpdate = millis();
-        
-        Serial.print("Calibration pulses: ");
-        Serial.println(calibrationPulseCount);
-      }
-      
-      if (calibrationStopRequest) {
-        calibrationStopRequest = false;
-        digitalWrite(RELE, HIGH);
-        isCalibrating = false;
-        state = CALIB_DONE;
-
-        if (calibrationPulseCount > 0) {
-          mlPerPulse = 5000.0 / calibrationPulseCount;
-          eepromUpdateNeeded = true;
-          
-          Serial.print("Calibration done, pulses: ");
-          Serial.print(calibrationPulseCount);
-          Serial.print(", ml/pulse: ");
-          Serial.println(mlPerPulse, 4);
-          
-          lcd.clear();
-          lcd.setCursor(0, 0);
-          lcd.print("Готово!");
-          lcd.setCursor(0, 1);
-          lcd.print("100мл=");
-          lcd.print(100.0/mlPerPulse, 1);
-          lcd.print("имп");
-        } else {
-          Serial.println("Calibration error: 0 pulses");
-          lcd.clear();
-          lcd.print("Ошибка: 0 имп");
-        }
-      }
-      break;
-
-    case CALIB_DONE:
-      Serial.println("Calibration: Done");
-      if (digitalRead(ButtonOK) == LOW || digitalRead(ButtonBACK) == LOW) {
-        Serial.println("Returning to menu");
-        state = CALIB_IDLE;
-        currentStatus = Menu;
-        needRedraw = true;
-      }
-      break;
-  }
-}
-
-void showStatistics() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Общая статистика:");
-  lcd.setCursor(0, 1);
-  lcd.print(String(totalMoney) + "р " + String(totalLiters, 1) + "л");
-  delay(3000);
-  currentStatus = Menu;
-  needRedraw = true;
-}
-
-void showTotalMoney() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Всего денег:");
-  lcd.setCursor(0, 1);
-  lcd.print(String(totalMoney) + " руб");
-  delay(2000);
-  currentStatus = Menu;
-  needRedraw = true;
-}
-
-void showTotalLiters() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Всего литров:");
-  lcd.setCursor(0, 1);
-  lcd.print(String(totalLiters, 1) + " л");
-  delay(2000);
-  currentStatus = Menu;
-  needRedraw = true;
-}
-
-void confirmReset() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Сбросить статистику?");
-  lcd.setCursor(0, 1);
-  lcd.print("OK-да BACK-нет");
-
-  unsigned long startTime = millis();
-  while(millis() - startTime < 5000) {
-    if (digitalRead(ButtonOK) == LOW) {
-      totalMoney = 0;
-      totalLiters = 0;
-      sessionMoney = 0;
-      
-      eepromUpdateNeeded = true;
-      
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Статистика");
-      lcd.setCursor(0, 1);
-      lcd.print("сброшена!");
-      delay(2000);
-      break;
-    }
-    
-    if (digitalRead(ButtonBACK) == LOW) {
-      break;
-    }
-    
-    delay(100);
-  }
-  
-  currentStatus = Menu;
-  needRedraw = true;
-}
-
 void setup() {
   Serial.begin(115200);
   while (!Serial) delay(10);
   Serial.flush();
   Serial.println("System started");
   
-  pinMode(ButtonOK, INPUT_PULLUP);
-  pinMode(ButtonBACK, INPUT_PULLUP);
-  pinMode(ButtonNEXT, INPUT_PULLUP);
-  pinMode(ButtonMENU, INPUT_PULLUP);
   pinMode(ButtonUSER, INPUT_PULLUP);
   pinMode(RELE, OUTPUT);
   digitalWrite(RELE, HIGH);
@@ -812,6 +358,30 @@ void setup() {
 
 void loop() {
   unsigned long currentMillis = millis();
+
+  // Handle user button press
+  if (userButtonFlag) {
+    userButtonFlag = false;
+    // Проверяем, поступают ли импульсы от купюроприёмника (в течение 500 мс)
+    if ((currentMillis - lastCoinInterruptTime < MONEY_INSERTION_TIMEOUT || 
+         currentMillis - lastBillInterruptTime < MONEY_INSERTION_TIMEOUT)) {
+      Serial.println("USER button ignored: money insertion in progress");
+    } else if (availableLiters > 0 && !dispensing) {
+      dispensing = true;
+      digitalWrite(RELE, LOW);
+      isRelayOn = true;
+      waterDispensedLiters = 0;
+      pulseCount = 0;
+      pauseMode = false;
+      needRedraw = true;
+      Serial.println("Dispensing started");
+    } else if (availableLiters <= 0 && !dispensing) {
+      showNoMoneyMessage = true;
+      needRedraw = true;
+      Serial.println("No funds");
+    }
+  }
+
   checkWaterSensor();
   handleWaterDispensing();
   
@@ -847,7 +417,6 @@ void loop() {
   }
 
   if (!criticalOperation) {
-    handleSystemState();
     safeEEPROMUpdate();
   }
   
